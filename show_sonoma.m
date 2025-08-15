@@ -1,51 +1,60 @@
 function show_sonoma(kmlFile, opts)
     if nargin < 2, opts = struct; end
-    if ~isfield(opts,'N'),      opts.N = 2000;    end
-    if ~isfield(opts,'method'), opts.method = 'makima'; end
+    if ~isfield(opts,'N'),        opts.N = 2000;         end
+    if ~isfield(opts,'method'),   opts.method = 'makima';end
+    if ~isfield(opts,'ShowInfo'), opts.ShowInfo = false; end   % <— NEW: hide file/length line by default
 
-    if nargin < 1 || isempty(kmlFile)   %kml file declaration
+    % pick KML
+    if nargin < 1 || isempty(kmlFile)
         [f,p] = uigetfile({'*.kml','KML files (*.kml)'}, 'Choose a KML polyline');
         if isequal(f,0), disp('Canceled.'); return; end
         kmlFile = fullfile(p,f);
     end
     assert(exist(kmlFile,'file')==2, 'File not found: %s', kmlFile);
 
-  
+    % read longest LineString
     [lat,lon,alt] = kml_read_longest_linestring(kmlFile);
     assert(numel(lat)>=2,'Could not find a valid LineString in the KML.');
 
-    % ENU anchor 
+    % ENU anchor
     if ~isfield(opts,'lat0'), opts.lat0 = lat(1); end
     if ~isfield(opts,'lon0'), opts.lon0 = lon(1); end
-    if ~isfield(opts,'h0'),   opts.h0   = (isempty(alt)||all(~isfinite(alt))) * 0 + ...
-                                        (~isempty(alt))*median(alt,'omitnan'); end
+    if ~isfield(opts,'h0')
+        if isempty(alt) || all(~isfinite(alt)), opts.h0 = 0; else, opts.h0 = median(alt,'omitnan'); end
+    end
 
+    % geodetic -> ENU, then resample/smooth
     [x_raw,y_raw,z_raw] = geodetic2enu_local(lat,lon,alt,opts.lat0,opts.lon0,opts.h0);
+    [x,y,z] = resample_polyline_strict(x_raw,y_raw,z_raw,opts.N,opts.method);
 
-    [x,y,z] = resample_polyline_strict(x_raw,y_raw,z_raw,opts.N,opts.method); %ENU 
-
-    L = sum(hypot(diff(x),diff(y)));
+    % basic stats (used only if you want to show them)
+    L   = sum(hypot(diff(x),diff(y)));
     ttl = sprintf('%s — %d pts, length %.1f m', strip_filename(kmlFile), numel(x), L);
 
     % ----- plot -----
     fig = figure('Name','KML Track Viewer','Color','w');
     t = tiledlayout(fig,1,2,'Padding','compact','TileSpacing','compact');
 
-    nexttile(t,1);  % top-down ENU
-    plot(x,y,'-','LineWidth',2); axis equal; grid on
-    xlabel('E (m)'); ylabel('N (m)');
-    title({'Track (top-down ENU)', ttl});
+    % top-down ENU
+    ax1 = nexttile(t,1);
+    plot(ax1,x,y,'-','LineWidth',2); axis(ax1,'equal'); grid(ax1,'on')
+    xlabel(ax1,'E (m)'); ylabel(ax1,'N (m)');
+    if opts.ShowInfo
+        title(ax1, {'Sonoma Raceway (Top Down View)', ttl});
+    else
+        title(ax1, 'Sonoma Raceway (Top Down View)');      % <— no file/length line
+    end
 
-    nexttile(t,2);  % 3D
-    plot3(x,y,z,'-','LineWidth',2); grid on; axis equal
-    xlabel('E (m)'); ylabel('N (m)'); zlabel('Up (m)');
-    title('Track (3D)'); view(3); rotate3d on
+    % 3D
+    ax2 = nexttile(t,2);
+    plot3(ax2,x,y,z,'-','LineWidth',2); grid(ax2,'on'); axis(ax2,'equal')
+    xlabel(ax2,'E (m)'); ylabel(ax2,'N (m)'); zlabel(ax2,'Up (m)');
+    title(ax2,'Sonoma Raceway (3D)'); view(ax2,3); rotate3d(ax2,'on')
 end
 
 % ==================== helpers ====================
 
 function [lat,lon,alt] = kml_read_longest_linestring(fname)
-% Parse KML and return the longest <coordinates> block as a polyline.
     txt = fileread(fname);
     blocks = regexp(txt,'<coordinates[^>]*>(.*?)</coordinates>','tokens');
     best = struct('lat',[],'lon',[],'alt',[],'score',-inf);
@@ -61,18 +70,16 @@ function [lat,lon,alt] = kml_read_longest_linestring(fname)
             if numel(p) >= 2
                 llon(end+1,1) = str2double(p{1}); %#ok<AGROW>
                 llat(end+1,1) = str2double(p{2});
-                if numel(p) >= 3, lalt(end+1,1) = str2double(p{3}); else, lalt(end+1,1) = 0; end
+                if numel(p) >= 3, lalt(end+1,1) = str2double(p{3});
+                else,            lalt(end+1,1) = 0; end
             end
         end
         ok = isfinite(llon)&isfinite(llat)&isfinite(lalt);
         llon=llon(ok); llat=llat(ok); lalt=lalt(ok);
         if numel(llon) < 2, continue; end
-
-        % if polygon is closed, drop the duplicate last point
-        if hypot(llon(end)-llon(1), llat(end)-llat(1)) < 1e-12
+        if hypot(llon(end)-llon(1), llat(end)-llat(1)) < 1e-12  % drop duplicate close
             llon(end)=[]; llat(end)=[]; lalt(end)=[];
         end
-
         score = sum(hypot(diff(llon),diff(llat))); % proxy for path length
         if score > best.score
             best = struct('lat',llat,'lon',llon,'alt',lalt,'score',score);
@@ -82,12 +89,11 @@ function [lat,lon,alt] = kml_read_longest_linestring(fname)
 end
 
 function [x,y,z] = geodetic2enu_local(lat,lon,alt,lat0,lon0,h0)
-% Use Mapping Toolbox if present, otherwise a small-area approximation.
     try
         wgs84 = wgs84Ellipsoid('meters');
         [x,y,z] = geodetic2enu(lat,lon,alt,lat0,lon0,h0,wgs84);
     catch
-        Re = 6378137;                   % Earth radius (m)
+        Re = 6378137;  % small-area approximation
         x = (lon - lon0) * pi/180 .* (Re*cosd(lat0));
         y = (lat - lat0) * pi/180 .* Re;
         if isempty(alt), alt = zeros(size(lat)); end
@@ -97,7 +103,6 @@ end
 
 function [xo,yo,zo] = resample_polyline_strict(x,y,z,N,method)
     if nargin < 5 || isempty(method), method = 'makima'; end
-
     x = x(:); y = y(:);
     if nargin < 3 || isempty(z), z = zeros(size(x)); else, z = z(:); end
 
@@ -114,7 +119,6 @@ function [xo,yo,zo] = resample_polyline_strict(x,y,z,N,method)
     s = [0; cumsum(hypot(diff(x),diff(y)))];   % arc length
     [s, ia] = unique(s,'stable');              % keep vectors in sync
     x = x(ia); y = y(ia); z = z(ia);
-    assert(numel(s)==numel(x),'Internal length mismatch after unique().');
 
     so = linspace(0,s(end),N).';
     xo = interp1(s,x,so,method);
@@ -125,3 +129,4 @@ end
 function s = strip_filename(p)
     [~,s,ext] = fileparts(p); s = [s ext];
 end
+
