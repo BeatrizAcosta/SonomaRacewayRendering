@@ -1,4 +1,4 @@
-function show_sonoma(kmlFile, opts)
+function sonoma_raceway(kmlFile, opts)
     if nargin < 2, opts = struct; end
     if ~isfield(opts,'N'),        opts.N = 2000;         end
     if ~isfield(opts,'method'),   opts.method = 'makima';end
@@ -12,7 +12,6 @@ function show_sonoma(kmlFile, opts)
     end
     assert(exist(kmlFile,'file')==2, 'File not found: %s', kmlFile);
 
-    % read longest LineString
     [lat,lon,alt] = kml_read_longest_linestring(kmlFile);
     assert(numel(lat)>=2,'Could not find a valid LineString in the KML.');
 
@@ -23,15 +22,13 @@ function show_sonoma(kmlFile, opts)
         if isempty(alt) || all(~isfinite(alt)), opts.h0 = 0; else, opts.h0 = median(alt,'omitnan'); end
     end
 
-    % geodetic -> ENU, then resample/smooth
+    % geodetic -> ENU
     [x_raw,y_raw,z_raw] = geodetic2enu_local(lat,lon,alt,opts.lat0,opts.lon0,opts.h0);
     [x,y,z] = resample_polyline_strict(x_raw,y_raw,z_raw,opts.N,opts.method);
-
-    % basic stats (used only if you want to show them)
     L   = sum(hypot(diff(x),diff(y)));
     ttl = sprintf('%s — %d pts, length %.1f m', strip_filename(kmlFile), numel(x), L);
 
-    % ----- plot -----
+    % plot
     fig = figure('Name','KML Track Viewer','Color','w');
     t = tiledlayout(fig,1,2,'Padding','compact','TileSpacing','compact');
 
@@ -51,8 +48,6 @@ function show_sonoma(kmlFile, opts)
     xlabel(ax2,'E (m)'); ylabel(ax2,'N (m)'); zlabel(ax2,'Up (m)');
     title(ax2,'Sonoma Raceway (3D)'); view(ax2,3); rotate3d(ax2,'on')
 end
-
-% ==================== helpers ====================
 
 function [lat,lon,alt] = kml_read_longest_linestring(fname)
     txt = fileread(fname);
@@ -129,4 +124,5 @@ end
 function s = strip_filename(p)
     [~,s,ext] = fileparts(p); s = [s ext];
 end
+
 
